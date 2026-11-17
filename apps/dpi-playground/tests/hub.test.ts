@@ -92,7 +92,11 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     networkFile,
     `devices:\n  box-a:\n    kind: url\n    url: ${a.base}\n    token_env: TOKEN_A\n  box-b:\n    kind: url\n    url: ${b.base}\n    token_env: TOKEN_B\n`,
   );
-  const hub = await bootHub(hubHome, networkFile, { TOKEN_A: tokenA, TOKEN_B: tokenB });
+  const hub = await bootHub(hubHome, networkFile, {
+    TOKEN_A: tokenA,
+    TOKEN_B: tokenB,
+    DPI_HUB_PUBLIC_HOST: "panel.example.test",
+  });
   const network = async () =>
     ((await (await fetch(`${hub.base}/api/network`)).json()) as { devices: NetworkDevice[] })
       .devices;
@@ -136,6 +140,15 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
       ).end();
     });
     assert.equal(evil, 421, "DNS-rebinding Host rejected");
+    const publicStatus = (origin: string) => new Promise<number>((done) => {
+      const u = new URL(`${hub.base}/api/network`);
+      request(
+        { host: u.hostname, port: u.port, path: u.pathname, headers: { host: "panel.example.test", origin } },
+        (r) => (r.resume(), done(r.statusCode ?? 0)),
+      ).end();
+    });
+    assert.equal(await publicStatus("https://panel.example.test"), 200, "configured public Host accepted");
+    assert.equal(await publicStatus("https://evil.test"), 403, "public Host still rejects foreign origins");
     assert.equal(
       (
         await fetch(`${hub.base}/api/ui-state/x`, {

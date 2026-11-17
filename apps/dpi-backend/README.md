@@ -19,6 +19,18 @@ npm start                      # 127.0.0.1:4780; data in ~/.dpi/backend
 
 With the repo's network config, `just net up local && just backend run` does the same thing. `just backend run` first stops whatever already listens on the backend's port.
 
+## exe.dev keyless models
+
+Set `DPI_PROVIDER=exe-llm` in `~/.dpi/backend.env` and restart the backend.
+The VM must have an LLM integration at `https://llm.int.exe.xyz` attached.
+No provider API keys are needed: usage goes through the integration's configured
+billing source. Available OpenAI and tool-capable Fireworks chat models are
+discovered at startup. OpenAI uses Responses; Fireworks uses Chat Completions.
+New sessions default to GPT-6.1 Sol when available. Existing supported choices
+are preserved (including mapped Fireworks equivalents); unsupported choices
+move to the default. Restart after changing enabled integration models.
+Displayed prices use catalog estimates when known, not integration billing rates.
+
 ## Configuration: `~/.dpi/backend.env`
 
 | Key | Default | Meaning |
@@ -30,8 +42,8 @@ With the repo's network config, `just net up local && just backend run` does the
 | `DPI_DATA_DIR` | `$DPI_HOME/backend` | catalog, app state, `sessions/`, `archive/` |
 | `DPI_HOME` | `~/.dpi` | where `backend.env` is read (set by the service unit) |
 | `DPI_ENV_FILE` | `$DPI_HOME/backend.env` | the env file to read |
-| `DPI_PROVIDER` | `openrouter` | `faux` gives a free deterministic model for tests |
-| `OPENROUTER_API_KEY` | | model access, required unless `DPI_PROVIDER=faux`. Without it the device lists no models. Never sent to clients |
+| `DPI_PROVIDER` | `openrouter` | `pi` uses Pi credentials for Codex/OpenCode; `exe-llm` uses the attached exe.dev integration; `faux` gives a free deterministic model for tests |
+| `OPENROUTER_API_KEY` | | model access for `DPI_PROVIDER=openrouter` only. Never sent to clients |
 | `TYPESAFE_API_KEY` | | optional: `jev-damage-control` asks Jev with it, else through OpenRouter |
 
 Flags `--port`, `--host`, `--name`, `--start-dirs`, `--data-dir` and `--env-file` override the env.

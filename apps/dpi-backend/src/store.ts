@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { exeLlmProvider, EXE_PROVIDER, EXE_DEFAULT_MODEL, exeAliases } from "./exe-llm.js";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { defaultPiModel, isPiModel, piProviders, routePiModel } from "./pi-models.js";
 import { fauxModels, installFaux } from "./faux.js";
@@ -91,7 +92,7 @@ export interface StoreOptions {
   dataDir: string;
   startDirs: string[];
   name: string;
-  provider: "openrouter" | "pi" | "faux";
+  provider: "openrouter" | "pi" | "faux" | "exe-llm";
   models?: Models;
 }
 
@@ -179,13 +180,13 @@ export class Store {
   }
 
   private constructor(readonly options: StoreOptions) {
-    if (options.provider === "pi") {
-      if (!options.models) throw Error("Pi providers require Pi's model runtime");
+    if (options.provider === "pi" || options.provider === EXE_PROVIDER) {
+      if (!options.models) throw Error("Selected provider requires a model runtime");
       this.models = options.models;
     } else {
       const models = createModels();
       if (options.provider === "faux") installFaux(models);
-      else {
+      else if (options.provider === "openrouter") {
         const provider = openrouterProvider();
         const catalog = provider.getModels();
         for (const model of curatedModels)
@@ -216,7 +217,9 @@ export class Store {
   }
 
   static async open(options: StoreOptions) {
-    const store = new Store({ ...options, dataDir: resolve(options.dataDir) });
+    const exeModels = options.provider === EXE_PROVIDER ? createModels() : undefined;
+    if (exeModels) exeModels.setProvider(await exeLlmProvider());
+    const store = new Store({ ...options, models: exeModels ?? options.models, dataDir: resolve(options.dataDir) });
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
@@ -276,6 +279,10 @@ export class Store {
 
   private defaultModel() {
     if (this.options.provider === "pi") return defaultPiModel(this.modelList).modelId;
+    if (this.options.provider === EXE_PROVIDER) {
+      return this.models.getModel(EXE_PROVIDER, EXE_DEFAULT_MODEL)
+        ? EXE_DEFAULT_MODEL : this.models.getModels(EXE_PROVIDER)[0].id;
+    }
     return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
   }
 
@@ -307,6 +314,13 @@ export class Store {
       }));
       return available.flat();
     }
+    if (this.options.provider === EXE_PROVIDER)
+      return this.models.getModels(EXE_PROVIDER).map((m) => ({
+        id: m.id, provider: EXE_PROVIDER, name: m.name, tier: "",
+        icon: m.id.startsWith("openai/") ? "openai.png" : "lab.png",
+        contextWindow: m.contextWindow, reasoning: m.reasoning,
+        cost: { input: m.cost.input, output: m.cost.output },
+      }));
     const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
     return curatedModels.flatMap((c) => {
       const m = available.find((m) => m.id === c.id);
@@ -333,6 +347,10 @@ export class Store {
       return { provider: "faux", modelId: id };
     }
     if (this.options.provider === "pi") return routePiModel(model, this.models.getModels(), this.modelList);
+    if (this.options.provider === EXE_PROVIDER) {
+      const id = exeAliases[model?.modelId ?? ""] ?? model?.modelId ?? this.defaultModel();
+      return { provider: EXE_PROVIDER, modelId: this.models.getModel(EXE_PROVIDER, id) ? id : this.defaultModel() };
+    }
     const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
     return {
       provider: "openrouter",
@@ -344,8 +362,9 @@ export class Store {
     const m = model as ModelRef | undefined;
     if (!m || typeof m.provider !== "string" || typeof m.modelId !== "string")
       throw invalid("model must be { provider, modelId }");
-    const known =
-      this.options.provider === "faux"
+    const known = this.options.provider === EXE_PROVIDER
+      ? m.provider === EXE_PROVIDER && !!this.models.getModel(EXE_PROVIDER, m.modelId)
+      : this.options.provider === "faux"
         ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
         : this.options.provider === "pi"
           ? isPiModel(m, this.models.getModels())
