@@ -39,6 +39,7 @@ import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { exeLlmProvider, EXE_PROVIDER, EXE_DEFAULT_MODEL, exeAliases } from "./exe-llm.js";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { fauxModels, installFaux } from "./faux.js";
 import {
@@ -90,7 +91,7 @@ export interface StoreOptions {
   dataDir: string;
   startDirs: string[];
   name: string;
-  provider: "openrouter" | "faux";
+  provider: "openrouter" | "faux" | "exe-llm";
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -178,7 +179,7 @@ export class Store {
 
   private constructor(readonly options: StoreOptions) {
     if (options.provider === "faux") installFaux(this.models);
-    else {
+    else if (options.provider === "openrouter") {
       const provider = openrouterProvider();
       const catalog = provider.getModels();
       for (const model of curatedModels)
@@ -211,6 +212,7 @@ export class Store {
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
+      if (options.provider === EXE_PROVIDER) store.models.setProvider(await exeLlmProvider());
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -264,6 +266,10 @@ export class Store {
   }
 
   private defaultModel() {
+    if (this.options.provider === EXE_PROVIDER) {
+      return this.models.getModel(EXE_PROVIDER, EXE_DEFAULT_MODEL)
+        ? EXE_DEFAULT_MODEL : this.models.getModels(EXE_PROVIDER)[0].id;
+    }
     return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
   }
 
@@ -278,6 +284,13 @@ export class Store {
         contextWindow: 128000,
         reasoning: false,
         cost: { input: 0, output: 0 },
+      }));
+    if (this.options.provider === EXE_PROVIDER)
+      return this.models.getModels(EXE_PROVIDER).map((m) => ({
+        id: m.id, provider: EXE_PROVIDER, name: m.name, tier: "", 
+        icon: m.id.startsWith("openai/") ? "openai.png" : "lab.png",
+        contextWindow: m.contextWindow, reasoning: m.reasoning,
+        cost: { input: m.cost.input, output: m.cost.output },
       }));
     const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
     return curatedModels.flatMap((c) => {
@@ -304,6 +317,10 @@ export class Store {
       const id = fauxModels.some((m) => m.id === model?.modelId) ? model!.modelId : fauxModels[0].id;
       return { provider: "faux", modelId: id };
     }
+    if (this.options.provider === EXE_PROVIDER) {
+      const id = exeAliases[model?.modelId ?? ""] ?? model?.modelId ?? this.defaultModel();
+      return { provider: EXE_PROVIDER, modelId: this.models.getModel(EXE_PROVIDER, id) ? id : this.defaultModel() };
+    }
     const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
     return {
       provider: "openrouter",
@@ -315,8 +332,9 @@ export class Store {
     const m = model as ModelRef | undefined;
     if (!m || typeof m.provider !== "string" || typeof m.modelId !== "string")
       throw invalid("model must be { provider, modelId }");
-    const known =
-      this.options.provider === "faux"
+    const known = this.options.provider === EXE_PROVIDER
+      ? m.provider === EXE_PROVIDER && !!this.models.getModel(EXE_PROVIDER, m.modelId)
+      : this.options.provider === "faux"
         ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
         : m.provider === "openrouter" &&
           curatedModels.some((c) => c.id === m.modelId) &&
