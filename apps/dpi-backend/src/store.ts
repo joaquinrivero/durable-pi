@@ -37,9 +37,10 @@ import { join, dirname, resolve } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai/models";
+import { createModels, type Models } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
+import { defaultPiModel, isPiModel, piProviders, routePiModel } from "./pi-models.js";
 import { fauxModels, installFaux } from "./faux.js";
 import {
   Harness,
@@ -90,7 +91,8 @@ export interface StoreOptions {
   dataDir: string;
   startDirs: string[];
   name: string;
-  provider: "openrouter" | "faux";
+  provider: "openrouter" | "pi" | "faux";
+  models?: Models;
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -141,7 +143,7 @@ const decodeCursor = (cursor?: string) => {
 };
 
 export class Store {
-  readonly models = createModels();
+  readonly models: Models;
   readonly opened = new Map<string, Opened>();
   readonly errors = new Map<string, string>();
   readonly catalog: DatabaseSync;
@@ -177,16 +179,23 @@ export class Store {
   }
 
   private constructor(readonly options: StoreOptions) {
-    if (options.provider === "faux") installFaux(this.models);
-    else {
-      const provider = openrouterProvider();
-      const catalog = provider.getModels();
-      for (const model of curatedModels)
-        if (!catalog.some((m) => m.id === model.id)) throw Error(`OpenRouter catalog missing ${model.id}`);
-      this.models.setProvider({
-        ...provider,
-        getModels: () => catalog.filter((m) => curatedModels.some((c) => c.id === m.id)),
-      });
+    if (options.provider === "pi") {
+      if (!options.models) throw Error("Pi providers require Pi's model runtime");
+      this.models = options.models;
+    } else {
+      const models = createModels();
+      if (options.provider === "faux") installFaux(models);
+      else {
+        const provider = openrouterProvider();
+        const catalog = provider.getModels();
+        for (const model of curatedModels)
+          if (!catalog.some((m) => m.id === model.id)) throw Error(`OpenRouter catalog missing ${model.id}`);
+        models.setProvider({
+          ...provider,
+          getModels: () => catalog.filter((m) => curatedModels.some((c) => c.id === m.id)),
+        });
+      }
+      this.models = models;
     }
     mkdirSync(options.dataDir, { recursive: true, mode: 0o700 });
     this.unlockCatalog = lockFile(`${this.catalogPath}.lock`);
@@ -211,6 +220,9 @@ export class Store {
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
+      store.modelList = await store.loadModels();
+      // Resolve a usable fallback before recovery changes any stored model selections.
+      if (options.provider === "pi") defaultPiModel(store.modelList);
       store.unlockShared = lockFile(`${store.sharedStatePath}.lock`);
       store.shared = await SharedState.open(store.sharedStatePath);
       store.shared.harness.subscribeCommits(() => store.notify());
@@ -223,7 +235,6 @@ export class Store {
       }
       if (!(await store.shared.initialized()))
         await store.shared.initialize({ goal: "Explore durable agents", counter: 0, notes: [] });
-      store.modelList = await store.loadModels();
       for (const { harness } of store.opened.values()) harness.resume();
       return store;
     } catch (e) {
@@ -264,6 +275,7 @@ export class Store {
   }
 
   private defaultModel() {
+    if (this.options.provider === "pi") return defaultPiModel(this.modelList).modelId;
     return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
   }
 
@@ -279,6 +291,22 @@ export class Store {
         reasoning: false,
         cost: { input: 0, output: 0 },
       }));
+    if (this.options.provider === "pi") {
+      const available = await Promise.all(piProviders.map(async (provider) => {
+        const models = await this.models.getAvailable(provider.id, { signal: AbortSignal.timeout(10000) });
+        return models.map((m) => ({
+          id: m.id,
+          provider: m.provider,
+          name: m.name,
+          tier: provider.tier,
+          icon: provider.icon,
+          contextWindow: m.contextWindow,
+          reasoning: m.reasoning,
+          cost: { input: m.cost.input, output: m.cost.output },
+        }));
+      }));
+      return available.flat();
+    }
     const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
     return curatedModels.flatMap((c) => {
       const m = available.find((m) => m.id === c.id);
@@ -304,6 +332,7 @@ export class Store {
       const id = fauxModels.some((m) => m.id === model?.modelId) ? model!.modelId : fauxModels[0].id;
       return { provider: "faux", modelId: id };
     }
+    if (this.options.provider === "pi") return routePiModel(model, this.models.getModels(), this.modelList);
     const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
     return {
       provider: "openrouter",
@@ -318,9 +347,11 @@ export class Store {
     const known =
       this.options.provider === "faux"
         ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
-        : m.provider === "openrouter" &&
-          curatedModels.some((c) => c.id === m.modelId) &&
-          !!this.models.getModel(m.provider, m.modelId);
+        : this.options.provider === "pi"
+          ? isPiModel(m, this.models.getModels())
+          : m.provider === "openrouter" &&
+            curatedModels.some((c) => c.id === m.modelId) &&
+            !!this.models.getModel(m.provider, m.modelId);
     if (!known) throw invalid(`Unknown model ${m.provider}/${m.modelId}. Choose one from GET /v1/device models`);
     return { provider: m.provider, modelId: m.modelId };
   }

@@ -2,6 +2,7 @@
 import express from "express";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
 import { bearerAuth } from "./auth.js";
@@ -14,6 +15,9 @@ const store = await Store.open({
   startDirs: config.startDirs,
   name: config.name,
   provider: config.provider,
+  models: config.provider === "pi"
+    ? await ModelRuntime.create({ modelsPath: null, refreshOnCreate: false })
+    : undefined,
 });
 
 const app = express();
