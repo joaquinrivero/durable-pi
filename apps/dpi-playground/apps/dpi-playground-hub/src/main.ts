@@ -31,6 +31,8 @@ monitor.start();
 const mux = new StreamMux(registry, monitor);
 
 const allowedHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
+const publicHost = process.env.DPI_HUB_PUBLIC_HOST?.trim().toLowerCase();
+if (publicHost) allowedHosts.add(publicHost);
 if (host !== "127.0.0.1" && host !== "localhost") {
   allowedHosts.add(`${hostname().toLowerCase()}:${port}`);
   allowedHosts.add(
