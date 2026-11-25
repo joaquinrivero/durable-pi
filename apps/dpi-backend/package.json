@@ -14,6 +14,7 @@
   "dependencies": {
     "@earendil-works/chord": "1.0.3",
     "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/pi-coding-agent": "^1.0.3",
     "@earendil-works/pi-durable": "1.0.3",
     "express": "^5.1.0",
     "tsx": "^4.20.0"
@@ -25,5 +26,13 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "overrides": {
+    "@earendil-works/pi-agent-core": "1.0.3",
+    "@earendil-works/pi-codemode": "1.0.3",
+    "@earendil-works/pi-mcp": "1.0.3",
+    "@earendil-works/pi-tui": "1.0.3",
+    "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/chord": "1.0.3"
   }
 }
